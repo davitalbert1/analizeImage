@@ -1,0 +1,49 @@
+# ============================================
+# DocFieldExtractor - Configuração
+# ============================================
+
+# Motor de OCR: "easyocr" ou "tesseract"
+ocr_engine: "easyocr"
+
+# Idiomas do OCR (códigos ISO)
+ocr_languages:
+  - "pt"
+  - "en"
+
+# Modelo de IA para extração avançada
+# Opções: "donut" (naver-clova-ix/donut-base) ou caminho local
+vision_model: "naver-clova-ix/donut-base"
+
+# Usar GPU se disponível
+use_gpu: true
+
+# DPI para conversão PDF → imagem
+pdf_dpi: 300
+
+# Confiança mínima do OCR (0.0 a 1.0)
+ocr_min_confidence: 0.3
+
+# Parser de campos
+field_parser:
+  # Tolerância vertical para agrupar texto na mesma linha (pixels)
+  line_tolerance: 15
+  # Gap mínimo horizontal para separar label de valor (pixels)
+  min_label_value_gap: 30
+  # Padrões de separador label:valor
+  separators:
+    - ":"
+    - "="
+    - " - "
+
+# Configuração de treinamento
+training:
+  model_name: "naver-clova-ix/donut-base"
+  output_dir: "./trained_model"
+  epochs: 30
+  batch_size: 2
+  learning_rate: 5.0e-5
+  max_length: 512
+  image_size: [1280, 960]
+  warmup_steps: 100
+  save_steps: 500
+  eval_steps: 500
