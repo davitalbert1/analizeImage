@@ -1,10 +1,15 @@
+import os
+
+if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import argparse
 import json
 import logging
 import sys
 from pathlib import Path
-
 from PIL import Image, ImageDraw, ImageFont
+from tqdm import tqdm
 
 # Adicionar raiz do projeto ao path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -32,16 +37,13 @@ CAMPOS_PADRAO = {
     "Hemoglobina": "14.2 g/dL",
 }
 
-
 def _fonte_tamanho(tamanho):
     try:
         return ImageFont.truetype("arial.ttf", tamanho)
     except Exception:
         return ImageFont.load_default()
 
-
 def gerar_imagem_padrao(caminho_saida, indice):
-    """Gera uma imagem sintética de exame para garantir dados de treino."""
     largura, altura = 800, 400
     imagem = Image.new("RGB", (largura, altura), "white")
     desenho = ImageDraw.Draw(imagem)
@@ -62,28 +64,16 @@ def gerar_imagem_padrao(caminho_saida, indice):
 
     imagem.save(caminho_saida, "PNG")
 
-
 def gerar_anotacao_padrao(caminho_saida, nome_imagem, indice):
     campos = dict(CAMPOS_PADRAO)
     campos["Paciente"] = f"Paciente Padrão {indice + 1}"
     campos["Glicose"] = f"{80 + indice * 5} mg/dL"
     campos["Colesterol Total"] = f"{170 + indice * 10} mg/dL"
 
-    anotacao = {
-        "image": nome_imagem,
-        "fields": campos,
-    }
-    with open(caminho_saida, "w", encoding="utf-8") as f:
-        json.dump(anotacao, f, ensure_ascii=False, indent=2)
-
+    anotacao = {"image": nome_imagem, "fields": campos}
+    with open(caminho_saida, "w", encoding="utf-8") as f: json.dump(anotacao, f, ensure_ascii=False, indent=2)
 
 def garantir_dados_padrao(images_dir: Path, annotations_dir: Path, usar_padrao: bool = True):
-    """Se não houver itens de treino, cria imagens/anotações padrão automaticamente.
-
-    Só gera dados padrão quando ``usar_padrao`` for True (usuário não passou
-    --images/--annotations). Caso contrário, apenas garante que os diretórios
-    existam e deixa a validação normal informar o erro.
-    """
     if usar_padrao:
         images_dir.mkdir(parents=True, exist_ok=True)
         annotations_dir.mkdir(parents=True, exist_ok=True)
@@ -98,51 +88,29 @@ def garantir_dados_padrao(images_dir: Path, annotations_dir: Path, usar_padrao: 
     pares_validos = 0
     for img_path in imagens_existentes:
         ann_path = annotations_dir / f"{img_path.stem}.json"
-        if ann_path.exists():
-            pares_validos += 1
+        if ann_path.exists(): pares_validos += 1
 
-    if pares_validos > 0:
-        return  # Já tem dados do usuário, não sobrescreve nada
-
-    if not usar_padrao:
-        return  # Caminho custom sem itens: deixa a validação padrão reportar o erro
+    if pares_validos > 0: return  # Já tem dados do usuário, não sobrescreve nada
+    if not usar_padrao: return  # Caminho custom sem itens: deixa a validação padrão reportar o erro
 
     # Não há itens: gera um conjunto padrão mínimo para não quebrar o treino
-    logger.info(
-        "Nenhum item de treino encontrado. Gerando imagens/anotações padrão..."
-    )
-    for i in range(MIN_SAMPLES_PADRAO):
+    logger.info("Nenhum item de treino encontrado. Gerando imagens/anotações padrão...")
+    for i in tqdm(range(MIN_SAMPLES_PADRAO), desc="Gerando itens padrão", unit="item"):
         nome_img = f"padrao_{i + 1:03d}.png"
         gerar_imagem_padrao(images_dir / nome_img, i)
-        gerar_anotacao_padrao(
-            annotations_dir / f"padrao_{i + 1:03d}.json", nome_img, i
-        )
+        gerar_anotacao_padrao(annotations_dir / f"padrao_{i + 1:03d}.json", nome_img, i)
 
-    print(
-        f"✅ {MIN_SAMPLES_PADRAO} amostra(s) padrão criada(s) em {images_dir} "
-        f"e {annotations_dir}"
-    )
+    print(f"✅ {MIN_SAMPLES_PADRAO} amostra(s) padrão criada(s) em {images_dir} e {annotations_dir}")
 
 def main():
     parser = argparse.ArgumentParser(description="Treinar modelo Donut para extração de campos de documentos")
-    parser.add_argument(
-        "--images",
-        default=str(DEFAULT_IMAGES_DIR),
-        help=f"Diretório com imagens de treino (padrão: {DEFAULT_IMAGES_DIR})",
-    )
-    parser.add_argument(
-        "--annotations",
-        default=str(DEFAULT_ANNOTATIONS_DIR),
-        help=f"Diretório com anotações JSON (padrão: {DEFAULT_ANNOTATIONS_DIR})",
-    )
+    parser.add_argument("--images", default=str(DEFAULT_IMAGES_DIR), help=f"Diretório com imagens de treino (padrão: {DEFAULT_IMAGES_DIR})",)
+    parser.add_argument("--annotations", default=str(DEFAULT_ANNOTATIONS_DIR), help=f"Diretório com anotações JSON (padrão: {DEFAULT_ANNOTATIONS_DIR})")
     parser.add_argument("--model", default="naver-clova-ix/donut-base", help="Modelo base (padrão: donut-base)")
-    parser.add_argument(
-        "--output-dir",
-        default="./trained_model",
-        help="Diretório de saída do modelo treinado",
-    )
+    parser.add_argument("--output-dir", default="./trained_model", help="Diretório de saída do modelo treinado")
     parser.add_argument("--epochs", type=int, default=30, help="Épocas de treino")
-    parser.add_argument("--batch-size", type=int, default=2, help="Batch size")
+    parser.add_argument("--batch-size", type=int, default=1, help="Batch size (padrão: 1 para Donut)")
+    parser.add_argument("--grad-accum-steps", type=int, default=4, help="Passos de acúmulo de gradiente (padrão: 4, batch efetivo = batch_size * steps)")
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--image-width", type=int, default=1280, help="Largura da imagem")
     parser.add_argument("--image-height", type=int, default=960, help="Altura da imagem")
@@ -150,6 +118,11 @@ def main():
     parser.add_argument("--save-steps", type=int, default=500, help="Salvar checkpoint a cada N steps")
     parser.add_argument("--eval-split", type=float, default=0.1, help="Proporção para validação")
     parser.add_argument("--cpu", action="store_true", help="Forçar uso de CPU")
+    parser.add_argument("--seed", type=int, default=None, help="Semente para reprodutibilidade")
+    parser.add_argument("--no-mixed-precision", action="store_true", help="Desativar precisão mista (AMP)")
+    parser.add_argument("--ema-decay", type=float, default=0.0, help="Decay para EMA (0 desativa)")
+    parser.add_argument("--no-grad-checkpointing", action="store_true", help="Desativar gradient checkpointing")
+    parser.add_argument("--no-auto-tune", action="store_true", help="Desativar auto-tuning de recursos")
     parser.add_argument("-v", "--verbose", action="store_true", help="Modo detalhado")
 
     args = parser.parse_args()
@@ -160,10 +133,7 @@ def main():
     images_dir = Path(args.images)
     annotations_dir = Path(args.annotations)
 
-    usar_padrao = (
-        str(images_dir) == str(DEFAULT_IMAGES_DIR)
-        and str(annotations_dir) == str(DEFAULT_ANNOTATIONS_DIR)
-    )
+    usar_padrao = (str(images_dir) == str(DEFAULT_IMAGES_DIR) and str(annotations_dir) == str(DEFAULT_ANNOTATIONS_DIR))
     garantir_dados_padrao(images_dir, annotations_dir, usar_padrao=usar_padrao)
 
     if not images_dir.exists():
@@ -186,23 +156,26 @@ def main():
         print("❌ Nenhum dado de treino válido encontrado!")
         print()
         print("Estrutura esperada:")
-        print(f"  {images_dir}/")
-        print(f"    doc001.png")
-        print(f"    doc002.png")
-        print(f"  {annotations_dir}/")
-        print(f"    doc001.json  →  {{\"fields\": {{\"Glicose\": \"95 mg/dL\", ...}}}}")
-        print(f"    doc002.json")
+        print(f"{images_dir}/")
+        print(f"doc001.png")
+        print(f"doc002.png")
+        print(f"{annotations_dir}/")
+        print(f"doc001.json  →  {{\"fields\": {{\"Glicose\": \"95 mg/dL\", ...}}}}")
+        print(f"doc002.json")
         sys.exit(1)
 
     print(f"✅ {len(training_data)} amostras preparadas")
     print()
     print("🚀 Iniciando treinamento...")
-    print(f"  Modelo base: {args.model}")
-    print(f"  Épocas: {args.epochs}")
-    print(f"  Batch size: {args.batch_size}")
-    print(f"  Learning rate: {args.lr}")
-    print(f"  Imagem: {args.image_width}x{args.image_height}")
+    print(f"Modelo base: {args.model}")
+    print(f"Épocas: {args.epochs}")
+    print(f"Batch size: {args.batch_size}")
+    print(f"Learning rate: {args.lr}")
+    print(f"Imagem: {args.image_width}x{args.image_height}")
     print()
+
+    # Barra de progresso por época (visível a partir do ponto de entrada)
+    pbar_epochs = tqdm(total=args.epochs, desc="Épocas", unit="época")
 
     # Treinar
     output = finetuner.train(
@@ -214,17 +187,26 @@ def main():
         image_size=(args.image_width, args.image_height),
         save_steps=args.save_steps,
         eval_split=args.eval_split,
+        seed=args.seed,
+        mixed_precision=not args.no_mixed_precision,
+        ema_decay=args.ema_decay,
+        auto_tune=not args.no_auto_tune,
+        gradient_accumulation_steps=args.grad_accum_steps,
+        gradient_checkpointing=not args.no_grad_checkpointing,
     )
+
+    pbar_epochs.update(args.epochs)
+    pbar_epochs.close()
 
     print()
     print("=" * 60)
     print("🎉 Treinamento concluído!")
-    print(f"  Modelo salvo em: {output}")
-    print(f"  Melhor modelo: {output}/best")
-    print(f"  Modelo final: {output}/final")
+    print(f"Modelo salvo em: {output}")
+    print(f"Melhor modelo: {output}/best")
+    print(f"Modelo final: {output}/final")
     print()
     print("Para usar o modelo treinado:")
-    print(f"  py main.py extract documento.pdf --use-ai --model {output}/best")
+    print(f"py main.py extract documento.pdf --use-ai --model {output}/best")
     print("=" * 60)
 
 if __name__ == "__main__":

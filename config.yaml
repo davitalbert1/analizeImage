@@ -40,7 +40,8 @@ training:
   model_name: "naver-clova-ix/donut-base"
   output_dir: "./trained_model"
   epochs: 30
-  batch_size: 2
+  batch_size: 1
+  gradient_accumulation_steps: 4
   learning_rate: 5.0e-5
   max_length: 512
   image_size: [1280, 960]

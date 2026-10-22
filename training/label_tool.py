@@ -1,10 +1,24 @@
 import json
 import sys
+import os
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
 from PIL import Image, ImageTk
+
+# --- UTF-8 seguro no console Windows ---
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 class LabelTool:
     def __init__(self, images_dir: str, output_dir: str):

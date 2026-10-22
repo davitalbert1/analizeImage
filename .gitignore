@@ -3,3 +3,5 @@ checkpoints
 test_docs
 training_data
 test_docs
+trained_model
+*.bak
