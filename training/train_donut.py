@@ -121,6 +121,12 @@ def main():
     parser.add_argument("--seed", type=int, default=None, help="Semente para reprodutibilidade")
     parser.add_argument("--no-mixed-precision", action="store_true", help="Desativar precisão mista (AMP)")
     parser.add_argument("--ema-decay", type=float, default=0.0, help="Decay para EMA (0 desativa)")
+    parser.add_argument(
+        "--max-length",
+        type=int,
+        default=None,
+        help="Comprimento máximo da sequência (padrão: calculado dinamicamente)",
+    )
     parser.add_argument("--no-grad-checkpointing", action="store_true", help="Desativar gradient checkpointing")
     parser.add_argument("--no-auto-tune", action="store_true", help="Desativar auto-tuning de recursos")
     parser.add_argument("-v", "--verbose", action="store_true", help="Modo detalhado")
@@ -146,7 +152,7 @@ def main():
 
     # Inicializar fine-tuner
     device = "cpu" if args.cpu else None
-    finetuner = DonutFineTuner(base_model=args.model, output_dir=args.output_dir, device=device)
+    finetuner = DonutFineTuner(base_model=args.model, output_dir=args.output_dir, device=device, max_length=args.max_length)
 
     # Preparar dados
     print("📋 Preparando dados de treino...")
@@ -203,6 +209,7 @@ def main():
     print("🎉 Treinamento concluído!")
     print(f"Modelo salvo em: {output}")
     print(f"Melhor modelo: {output}/best")
+    print(f"Última época: {output}/last_epoch")
     print(f"Modelo final: {output}/final")
     print()
     print("Para usar o modelo treinado:")

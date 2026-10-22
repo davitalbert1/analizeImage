@@ -131,6 +131,7 @@ def cmd_train(args):
     finetuner = DonutFineTuner(
         base_model=args.model,
         output_dir=args.output_dir,
+        max_length=getattr(args, "max_length", None),
     )
 
     # Preparar dados
@@ -237,6 +238,12 @@ Exemplos:
     p_train.add_argument("--batch-size", type=int, default=1, help="Batch size (padrão: 1 para Donut)")
     p_train.add_argument("--grad-accum-steps", type=int, default=4, help="Passos de acúmulo de gradiente (padrão: 4)")
     p_train.add_argument("--lr", type=float, default=5e-5, help="Learning rate (padrão: 5e-5)")
+    p_train.add_argument(
+        "--max-length",
+        type=int,
+        default=None,
+        help="Comprimento máximo da sequência (padrão: calculado dinamicamente)",
+    )
     p_train.add_argument("-v", "--verbose", action="store_true", help="Modo detalhado")
 
     # Comando: label

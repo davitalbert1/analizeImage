@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+import fitz
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -27,8 +28,7 @@ class PDFReader:
             # Converter para numpy array RGB
             img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
 
-            # Se RGBA, converter para RGB
-            if pix.n == 4: img = img[:, :, :3]
+            if pix.n == 4: img = img[:, :, :3] # Se RGBA, converter para RGB
 
             images.append(img)
             logger.info(f"PDF página {page_num + 1}/{len(doc)}: {pix.width}x{pix.height}")
@@ -37,8 +37,6 @@ class PDFReader:
         return images
 
     def extract_text_blocks(self, pdf_path: str | Path) -> list[list[dict]]:
-        import fitz
-
         pdf_path = Path(pdf_path)
         doc = fitz.open(str(pdf_path))
         all_blocks = []

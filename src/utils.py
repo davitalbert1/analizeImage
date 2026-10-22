@@ -47,6 +47,11 @@ def setup_logging(level: str = "INFO"):
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    # Suprimir logs HTTP verbosos do httpx (INFO-level HEAD/GET requests
+    # para HuggingFace, incluindo respostas 404/307 de arquivos que não
+    # existem no modelo, como audio_tokenizer_config.json,
+    # processor_config.json, model.safetensors, generation_config.json).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 def profile_system_resources() -> dict:
     info = {

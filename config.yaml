@@ -1,9 +1,4 @@
-# ============================================
-# DocFieldExtractor - Configuração
-# ============================================
-
-# Motor de OCR: "easyocr" ou "tesseract"
-ocr_engine: "easyocr"
+ocr_engine: "easyocr" # Motor de OCR: "easyocr" ou "tesseract"
 
 # Idiomas do OCR (códigos ISO)
 ocr_languages:
@@ -14,21 +9,14 @@ ocr_languages:
 # Opções: "donut" (naver-clova-ix/donut-base) ou caminho local
 vision_model: "naver-clova-ix/donut-base"
 
-# Usar GPU se disponível
-use_gpu: true
-
-# DPI para conversão PDF → imagem
-pdf_dpi: 300
-
-# Confiança mínima do OCR (0.0 a 1.0)
-ocr_min_confidence: 0.3
+use_gpu: true # Usar GPU se disponível
+pdf_dpi: 300 # DPI para conversão PDF → imagem
+ocr_min_confidence: 0.3 # Confiança mínima do OCR (0.0 a 1.0)
 
 # Parser de campos
 field_parser:
-  # Tolerância vertical para agrupar texto na mesma linha (pixels)
-  line_tolerance: 15
-  # Gap mínimo horizontal para separar label de valor (pixels)
-  min_label_value_gap: 30
+  line_tolerance: 15 # Tolerância vertical para agrupar texto na mesma linha (pixels)
+  min_label_value_gap: 30 # Gap mínimo horizontal para separar label de valor (pixels)
   # Padrões de separador label:valor
   separators:
     - ":"

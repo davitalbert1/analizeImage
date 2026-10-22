@@ -4,6 +4,7 @@ import logging
 import re
 import random
 import gc
+import shutil
 from pathlib import Path
 import torch
 from torch.utils.data import Dataset
@@ -203,11 +204,7 @@ class DocDataset(Dataset):
         # Substituir padding por -100 (ignorar no loss)
         labels[labels == self.processor.tokenizer.pad_token_id] = -100
 
-        return {
-            "pixel_values": pixel_values,
-            "labels": labels,
-        }
-
+        return {"pixel_values": pixel_values, "labels": labels}
 
 class DonutFineTuner:
     def __init__(
@@ -215,9 +212,11 @@ class DonutFineTuner:
         base_model: str = "naver-clova-ix/donut-base",
         output_dir: str = "./trained_model",
         device: str | None = None,
+        max_length: int | None = None,
     ):
         self.base_model = base_model
         self.output_dir = output_dir
+        self.max_length = max_length  # None = calcular dinamicamente nos dados
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -264,6 +263,12 @@ class DonutFineTuner:
         parts.append("</s_document>")
         return "".join(parts)
 
+    def _limpar_modelos_antigos(self, output_dir: Path) -> None:
+        for pattern in ("epoch_*", "checkpoint-*"):
+            for d in output_dir.glob(pattern):
+                shutil.rmtree(d, ignore_errors=True)
+                logger.info(f"Diret�rio de modelo antigo removido: {d}")
+
     def train(
         self,
         training_data: list[dict],
@@ -292,15 +297,14 @@ class DonutFineTuner:
         output_dir = Path(self.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # --- Seed para reprodutibilidade ---
+        # Seed para reprodutibilidade
         if seed is not None:
             random.seed(seed)
             torch.manual_seed(seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(seed)
+            if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
             logger.info(f"Seed definido: {seed}")
 
-        # --- Auto-tuning de recursos ---
+        # Auto-tuning de recursos
         if auto_tune:
             tune_cfg = get_optimized_training_config(current_batch_size=batch_size, current_workers=0)
             print_resource_report(tune_cfg)
@@ -315,7 +319,7 @@ class DonutFineTuner:
         logger.info(f"Iniciando fine-tuning: {len(training_data)} amostras")
         logger.info(f"Épocas: {epochs}, Batch: {batch_size}, LR: {learning_rate}, AMP: {mixed_precision}")
 
-        # --- Carregar modelo e processador com retry ---
+        # Carregar modelo e processador com retry
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
@@ -332,15 +336,44 @@ class DonutFineTuner:
 
         # Coletar tokens especiais dos ground truths
         special_tokens = set()
+        all_tags = set()
         for item in training_data:
             gt = item["ground_truth"]
             tokens = re.findall(r"</?s_\w+>", gt)
             special_tokens.update(tokens)
+            # Extrair nomes de tags (sem os colchetes e barra)
+            tags = re.findall(r"<s_(\w+)>", gt)
+            all_tags.update(tags)
 
         special_tokens = sorted(special_tokens)
         if special_tokens:
             processor.tokenizer.add_special_tokens({"additional_special_tokens": list(special_tokens)})
-            model.decoder.resize_token_embeddings(len(processor.tokenizer))
+            model.decoder.resize_token_embeddings(len(processor.tokenizer), mean_resizing=False)
+
+        # Calcular comprimento máximo de sequência dinamicamente a partir dos ground truths
+        if self.max_length is None:
+            max_gt_len = max(
+                len(processor.tokenizer(item["ground_truth"], add_special_tokens=False).input_ids)
+                for item in training_data
+            )
+            # Adicionar margem de segurança e alinhar para múltiplo de 8
+            self.max_length = min(1024, max(max_gt_len + 32, 128))
+            self.max_length = ((self.max_length + 7) // 8) * 8
+            logger.info(f"Comprimento máximo de sequência calculado dinamicamente: {self.max_length}")
+        else:
+            logger.info(f"Usando comprimento de sequência especificado: {self.max_length}")
+
+        # Salvar vocabulário de tags para consistência entre treino e inferência
+        tags_path = output_dir / "tags.json"
+        tag_list = sorted(all_tags)
+        with open(tags_path, "w", encoding="utf-8") as f:
+            json.dump({"tags": tag_list, "num_tags": len(tag_list)}, f, ensure_ascii=False, indent=2)
+        logger.info(f"Vocabulário de tags salvo: {len(tag_list)} tags em {tags_path}")
+
+        # Inicializar arquivo de métricas JSON
+        metrics_path = output_dir / "metrics.json"
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump({"epochs": []}, f, ensure_ascii=False, indent=2)
 
         # Configurar modelo
         model.config.pad_token_id = processor.tokenizer.pad_token_id
@@ -349,16 +382,16 @@ class DonutFineTuner:
         # Gradient checkpointing economiza muita VRAM na Swin Transformer e BART decoder
         if gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
             model.gradient_checkpointing_enable()
+            # Desativar use_cache para evitar warning do transformers:
+            # "use_cache=True is incompatible with gradient checkpointing"
+            model.config.use_cache = False
             logger.info("Gradient checkpointing ativado (redução drástica de VRAM)")
 
         # Configurar tamanho da imagem
-        processor.image_processor.size = {
-            "height": image_size[1],
-            "width": image_size[0],
-        }
+        processor.image_processor.size = {"height": image_size[1], "width": image_size[0]}
 
-        # Criar dataset
-        dataset = DocDataset(training_data, processor, max_len=512)
+        # Criar dataset com comprimento de sequência dinâmico
+        dataset = DocDataset(training_data, processor, max_len=self.max_length)
 
         # Split treino/validação
         n_eval = max(1, int(len(dataset) * eval_split))
@@ -379,7 +412,7 @@ class DonutFineTuner:
         total_steps = len(train_loader) * epochs
         scheduler = CosineAnnealingLR(optimizer, T_max=total_steps)
 
-        # --- EMA (Exponential Moving Average) ---
+        # EMA (Exponential Moving Average)
         ema_model = None
         if ema_decay > 0:
             import copy
@@ -400,8 +433,8 @@ class DonutFineTuner:
         for epoch in tqdm(range(epochs), desc="Épocas", unit="época"):
             # Carregar modelo da época anterior (se não for a primeira)
             if epoch > 0:
-                prev_epoch_dir = output_dir / f"epoch_{epoch}"
-                if prev_epoch_dir.exists():
+                last_epoch_dir = output_dir / "last_epoch"
+                if last_epoch_dir.exists():
                     logger.info(f"Carregando modelo da época {epoch}...")
                     # Load checkpoint weights in-place (NOT by replacing the model
                     # object) to preserve parameter-tensor identity.  The optimizer,
@@ -416,7 +449,7 @@ class DonutFineTuner:
                     # copy_() so tensor identity is retained and the optimizer /
                     # scaler continue to work.
                     checkpoint_model = VisionEncoderDecoderModel.from_pretrained(
-                        prev_epoch_dir
+                        last_epoch_dir
                     )
                     model.load_state_dict(checkpoint_model.state_dict())
                     del checkpoint_model  # free the temporary model immediately
@@ -463,16 +496,29 @@ class DonutFineTuner:
                     if use_amp:
                         scaler.unscale_(optimizer)
                         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                        # scaler.step(optimizer) may skip the optimizer step when
+                        # inf/NaN gradients are detected after unscaling. We
+                        # compare the loss scale before and after the step to only
+                        # call scheduler.step() when the optimizer was actually
+                        # stepped, avoiding the "lr_scheduler.step() before
+                        # optimizer.step()" warning.
+                        # (The old optimizer._step_count attribute was removed in
+                        #  modern PyTorch, hence this scale-based check.)
+                        prev_scale = scaler.get_scale()
                         scaler.step(optimizer)
                         scaler.update()
+                        optimizer.zero_grad(set_to_none=True)
+                        # If the scale is unchanged, the optimizer step was not
+                        # skipped by the scaler (no inf/NaN gradients).
+                        if scaler.get_scale() == prev_scale:
+                            scheduler.step()
                     else:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                         optimizer.step()
+                        optimizer.zero_grad(set_to_none=True)
+                        scheduler.step()
 
-                    optimizer.zero_grad(set_to_none=True)
-                    scheduler.step()
-
-                    # --- Atualizar EMA ---
+                    # Atualizar EMA
                     if ema_model is not None:
                         with torch.no_grad():
                             for ema_param, model_param in zip(ema_model.parameters(), model.parameters()):
@@ -503,6 +549,9 @@ class DonutFineTuner:
                     )
 
                 if save_steps > 0 and global_step % save_steps == 0:
+                    # Remover checkpoints antigos mantendo apenas o mais recente
+                    for old_cp in output_dir.glob("checkpoint-*"):
+                        shutil.rmtree(old_cp, ignore_errors=True)
                     checkpoint_dir = output_dir / f"checkpoint-{global_step}"
                     model.save_pretrained(checkpoint_dir)
                     processor.save_pretrained(checkpoint_dir)
@@ -519,6 +568,7 @@ class DonutFineTuner:
             # Avaliação
             model.eval()
             eval_loss = 0.0
+            eval_acc = 0.0
             n_eval_batches = 0
             pbar_eval = tqdm(
                 eval_loader,
@@ -533,6 +583,19 @@ class DonutFineTuner:
                     with torch.amp.autocast('cuda', enabled=use_amp):
                         outputs = model(pixel_values=pixel_values, labels=labels)
                     eval_loss += outputs.loss.item()
+
+                    # Acurácia de token-level na avaliação
+                    with torch.no_grad():
+                        logits = outputs.logits
+                        predictions = logits.argmax(dim=-1)
+                        mask = labels != -100
+                        if mask.sum() > 0:
+                            correct = (predictions == labels) & mask
+                            batch_acc = correct.sum().float() / mask.sum().float()
+                        else:
+                            batch_acc = torch.tensor(0.0, device=self.device)
+                    eval_acc += batch_acc.item()
+
                     n_eval_batches += 1
                     pbar_eval.set_postfix({"eval_loss": f"{outputs.loss.item():.4f}"})
             pbar_eval.close()
@@ -542,11 +605,31 @@ class DonutFineTuner:
             gc.collect()
 
             avg_eval_loss = eval_loss / max(n_eval_batches, 1)
+            avg_train_acc = epoch_acc / max(n_batches, 1)
+            avg_eval_acc = eval_acc / max(n_eval_batches, 1)
 
             logger.info(
                 f"Época {epoch + 1}/{epochs} concluída | "
-                f"Train Loss: {avg_loss:.4f} | Eval Loss: {avg_eval_loss:.4f}"
+                f"Train Loss: {avg_loss:.4f} | Eval Loss: {avg_eval_loss:.4f} | "
+                f"Train Acc: {avg_train_acc:.4f} | Eval Acc: {avg_eval_acc:.4f}"
             )
+
+            # Salvar métricas consolidadas em JSON (metrics.json no diretório raiz do modelo)
+            metrics_path = output_dir / "metrics.json"
+            try:
+                with open(metrics_path, "r", encoding="utf-8") as f:
+                    metrics = json.load(f)
+            except Exception:
+                metrics = {"epochs": []}
+            metrics["epochs"].append({
+                "epoch": epoch + 1,
+                "train_loss": round(avg_loss, 6),
+                "eval_loss": round(avg_eval_loss, 6),
+                "train_acc": round(avg_train_acc, 6),
+                "eval_acc": round(avg_eval_acc, 6),
+            })
+            with open(metrics_path, "w", encoding="utf-8") as f:
+                json.dump(metrics, f, ensure_ascii=False, indent=2)
 
             # Salvar melhor modelo (usar pesos EMA se disponível)
             save_model = ema_model if ema_model is not None else model
@@ -557,15 +640,24 @@ class DonutFineTuner:
                 processor.save_pretrained(best_dir)
                 logger.info(f"Melhor modelo salvo (loss={best_eval_loss:.4f})")
 
-            # Salvar modelo ao final de cada época (usar pesos EMA se disponível)
-            epoch_dir = output_dir / f"epoch_{epoch + 1}"
-            save_model.save_pretrained(epoch_dir)
-            processor.save_pretrained(epoch_dir)
+            # Salvar modelo ao final de cada época, sobrescrevendo o anterior
+            last_epoch_dir = output_dir / "last_epoch"
+            if last_epoch_dir.exists():
+                shutil.rmtree(last_epoch_dir, ignore_errors=True)
+            save_model.save_pretrained(last_epoch_dir)
+            processor.save_pretrained(last_epoch_dir)
             # Salvar metadados da época
-            import json as _json
-            with open(epoch_dir / "epoch_info.json", "w", encoding="utf-8") as f:
-                _json.dump({"epoch": epoch + 1, "train_loss": avg_loss, "eval_loss": avg_eval_loss}, f, indent=2)
-            logger.info(f"Modelo da época {epoch + 1} salvo em: {epoch_dir}")
+            with open(last_epoch_dir / "epoch_info.json", "w", encoding="utf-8") as f:
+                json.dump({
+                    "epoch": epoch + 1,
+                    "train_loss": round(avg_loss, 6),
+                    "eval_loss": round(avg_eval_loss, 6),
+                    "train_acc": round(avg_train_acc, 6),
+                    "eval_acc": round(avg_eval_acc, 6),
+                }, f, indent=2)
+            logger.info(f"Modelo da época {epoch + 1} salvo em: {last_epoch_dir}")
+            # Apagar modelos antigos (épocas e checkpoints), mantendo apenas o mais recente
+            self._limpar_modelos_antigos(output_dir)
 
         # Salvar modelo final (usar pesos EMA se disponível)
         save_model = ema_model if ema_model is not None else model

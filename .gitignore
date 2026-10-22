@@ -1,7 +1,9 @@
 __pycache__
 checkpoints
-test_docs
 training_data
-test_docs
 trained_model
+test_trained
+test_balanced
+test_docs
+test_data
 *.bak

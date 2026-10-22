@@ -1,13 +1,11 @@
 import json
 import sys
-import os
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
-
 from PIL import Image, ImageTk
 
-# --- UTF-8 seguro no console Windows ---
+# UTF-8 seguro no console Windows
 if sys.platform == "win32":
     if hasattr(sys.stdout, "reconfigure"):
         try:
@@ -28,9 +26,7 @@ class LabelTool:
 
         # Coletar imagens
         extensions = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif"}
-        self.image_files = sorted(
-            [f for f in self.images_dir.iterdir() if f.suffix.lower() in extensions]
-        )
+        self.image_files = sorted([f for f in self.images_dir.iterdir() if f.suffix.lower() in extensions])
 
         if not self.image_files:
             print(f"❌ Nenhuma imagem encontrada em: {self.images_dir}")
