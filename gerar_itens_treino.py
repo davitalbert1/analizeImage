@@ -845,7 +845,7 @@ def gerar_documento(
 def main():
     parser = argparse.ArgumentParser(description="Gera documentos sintéticos genéricos (imagem + JSON) para treinar o Donut.")
     parser.add_argument("--output", "-o", default="./training_data", help="Diretório de saída (padrão: ./training_data)")
-    parser.add_argument("--num", "-n", type=int, default=1000, help="Número de documentos a gerar (padrão: 100)")
+    parser.add_argument("--num", "-n", type=int, default=1000000, help="Número de documentos a gerar (padrão: 100)")
     parser.add_argument("--seed", type=int, default=42, help="Semente do gerador aleatório (padrão: 42)")
     parser.add_argument("--types", default="all", help=("Tipos de documento a gerar, separados por vírgula (ex: financeiro,logistica). Use 'all' para todos (padrão: all)"))
     parser.add_argument("--layout", default="all", help=("Layout fixo (lista, lista_alternada, duas_colunas, tabela, blocos) ou 'all' para variar (padrão: all)"))
@@ -882,13 +882,48 @@ def main():
                 if arquivo.is_file(): arquivo.unlink()
         print(f"🧹 Conteúdo anterior removido de {dir_saida}")
 
+    # Verifica quantas imagens de treino já existem na pasta de saída
+    dir_imagens = dir_saida / "images"
+    imagens_existentes = list(dir_imagens.glob("doc_*.png"))
+    qtd_existente = len(imagens_existentes)
+
+    # Determina o próximo índice disponível (evita sobrescrever arquivos existentes)
+    proximo_indice = args.start_index
+    if imagens_existentes:
+        indices_existentes = []
+        for arq in imagens_existentes:
+            try:
+                # nome do arquivo: doc_000001.png
+                indice_arq = int(arq.stem.split("_")[1])
+                indices_existentes.append(indice_arq)
+            except (ValueError, IndexError):
+                continue
+        if indices_existentes:
+            proximo_indice = max(proximo_indice, max(indices_existentes) + 1)
+
+    # Calcula quantos documentos ainda precisam ser gerados
+    restante = args.num - qtd_existente
+    if restante <= 0:
+        print("=" * 60)
+        print("📄 Gerador de documentos sintéticos genéricos")
+        print("=" * 60)
+        print(f"Saída: {dir_saida}")
+        print(f"Quantidade solicitada: {args.num}")
+        print(f"Imagens já existentes: {qtd_existente}")
+        print("✅ Nenhum documento novo necessário. O alvo já foi atingido.")
+        print("=" * 60)
+        return
+
     rng = random.Random(args.seed)
 
     print("=" * 60)
     print("📄 Gerador de documentos sintéticos genéricos")
     print("=" * 60)
     print(f"Saída: {dir_saida}")
-    print(f"Quantidade:  {args.num}")
+    print(f"Quantidade solicitada: {args.num}")
+    print(f"Imagens já existentes: {qtd_existente}")
+    print(f"Documentos a gerar: {restante}")
+    print(f"Índice inicial: {proximo_indice}")
     print(f"Tipos: {', '.join(tipos)}")
     print(f"Layouts: {args.layout}")
     if args.balanced_layouts: print(f"Layouts balanceados: Sim (round-robin)")
@@ -906,14 +941,15 @@ def main():
     tipo_cycle = tipos if args.balanced_types else None
     layout_cycle = LAYOUTS if (args.balanced_layouts and args.layout == "all") else None
 
-    for i in tqdm(range(args.num), desc="Gerando documentos", unit="doc"):
+    for i in tqdm(range(restante), desc="Gerando documentos", unit="doc"):
+        idx_global = i  # posição relativa dentro deste lote
         if tipo_cycle is not None:
-            tipo = tipo_cycle[i % len(tipo_cycle)]
+            tipo = tipo_cycle[idx_global % len(tipo_cycle)]
         else:
             tipo = rng.choice(tipos)
 
         if layout_cycle is not None:
-            layout = layout_cycle[i % len(layout_cycle)]
+            layout = layout_cycle[idx_global % len(layout_cycle)]
         elif args.layout != "all":
             layout = args.layout
         else:
@@ -921,7 +957,7 @@ def main():
 
         anotacao = gerar_documento(
             rng,
-            indice=args.start_index + i,
+            indice=proximo_indice + i,
             dir_saida=dir_saida,
             tipo_doc=tipo,
             forcar_layout=layout,

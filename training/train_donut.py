@@ -108,9 +108,10 @@ def main():
     parser.add_argument("--annotations", default=str(DEFAULT_ANNOTATIONS_DIR), help=f"Diretório com anotações JSON (padrão: {DEFAULT_ANNOTATIONS_DIR})")
     parser.add_argument("--model", default="naver-clova-ix/donut-base", help="Modelo base (padrão: donut-base)")
     parser.add_argument("--output-dir", default="./trained_model", help="Diretório de saída do modelo treinado")
-    parser.add_argument("--epochs", type=int, default=30, help="Épocas de treino")
+    parser.add_argument("--epochs", type=int, default=5, help="Épocas de treino (padrão: 5)")
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size (padrão: 1 para Donut)")
     parser.add_argument("--grad-accum-steps", type=int, default=4, help="Passos de acúmulo de gradiente (padrão: 4, batch efetivo = batch_size * steps)")
+    parser.add_argument("--max-steps-per-epoch", type=int, default=100, help="Máximo de steps por época (padrão: 500, use 0 para sem limite)")
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--image-width", type=int, default=1280, help="Largura da imagem")
     parser.add_argument("--image-height", type=int, default=960, help="Altura da imagem")
@@ -121,12 +122,7 @@ def main():
     parser.add_argument("--seed", type=int, default=None, help="Semente para reprodutibilidade")
     parser.add_argument("--no-mixed-precision", action="store_true", help="Desativar precisão mista (AMP)")
     parser.add_argument("--ema-decay", type=float, default=0.0, help="Decay para EMA (0 desativa)")
-    parser.add_argument(
-        "--max-length",
-        type=int,
-        default=None,
-        help="Comprimento máximo da sequência (padrão: calculado dinamicamente)",
-    )
+    parser.add_argument("--max-length", type=int, default=None, help="Comprimento máximo da sequência (padrão: calculado dinamicamente)",)
     parser.add_argument("--no-grad-checkpointing", action="store_true", help="Desativar gradient checkpointing")
     parser.add_argument("--no-auto-tune", action="store_true", help="Desativar auto-tuning de recursos")
     parser.add_argument("-v", "--verbose", action="store_true", help="Modo detalhado")
@@ -199,6 +195,7 @@ def main():
         auto_tune=not args.no_auto_tune,
         gradient_accumulation_steps=args.grad_accum_steps,
         gradient_checkpointing=not args.no_grad_checkpointing,
+        max_steps_per_epoch=args.max_steps_per_epoch,
     )
 
     pbar_epochs.update(args.epochs)
@@ -207,13 +204,11 @@ def main():
     print()
     print("=" * 60)
     print("🎉 Treinamento concluído!")
-    print(f"Modelo salvo em: {output}")
-    print(f"Melhor modelo: {output}/best")
-    print(f"Última época: {output}/last_epoch")
-    print(f"Modelo final: {output}/final")
+    print(f"Modelo único salvo em: {output}")
+    print(f"Métricas de treino (acc/loss): {output}/metrics.json")
     print()
     print("Para usar o modelo treinado:")
-    print(f"py main.py extract documento.pdf --use-ai --model {output}/best")
+    print(f"py main.py extract documento.pdf --use-ai --model {output}")
     print("=" * 60)
 
 if __name__ == "__main__":

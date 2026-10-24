@@ -7,3 +7,4 @@ test_balanced
 test_docs
 test_data
 *.bak
+build/

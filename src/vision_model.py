@@ -264,17 +264,24 @@ class DonutFineTuner:
         return "".join(parts)
 
     def _limpar_modelos_antigos(self, output_dir: Path) -> None:
+        # Mantém apenas 1 modelo na raiz (sobrescrito a cada salva): remove subpastas antigas
+        for sub in ("best", "final", "last_epoch"):
+            d = output_dir / sub
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+                logger.info(f"Diretório de modelo antigo removido: {d}")
         for pattern in ("epoch_*", "checkpoint-*"):
             for d in output_dir.glob(pattern):
                 shutil.rmtree(d, ignore_errors=True)
-                logger.info(f"Diret�rio de modelo antigo removido: {d}")
+                logger.info(f"Diretório de modelo antigo removido: {d}")
 
     def train(
         self,
         training_data: list[dict],
-        epochs: int = 30,
+        epochs: int = 5,
         batch_size: int = 2,
         learning_rate: float = 5e-5,
+        max_steps_per_epoch: int | None = 500,
         warmup_steps: int = 100,
         image_size: tuple[int, int] = (1280, 960),
         save_steps: int = 500,
@@ -432,9 +439,10 @@ class DonutFineTuner:
 
         for epoch in tqdm(range(epochs), desc="Épocas", unit="época"):
             # Carregar modelo da época anterior (se não for a primeira)
+            # O modelo é mantido em 1 único arquivo na raiz (sobrescrito a cada salva)
             if epoch > 0:
-                last_epoch_dir = output_dir / "last_epoch"
-                if last_epoch_dir.exists():
+                single_model_path = output_dir / "model.safetensors"
+                if single_model_path.exists():
                     logger.info(f"Carregando modelo da época {epoch}...")
                     # Load checkpoint weights in-place (NOT by replacing the model
                     # object) to preserve parameter-tensor identity.  The optimizer,
@@ -443,30 +451,27 @@ class DonutFineTuner:
                     # created.  If we did  model = ...from_pretrained(...)  we would
                     # get a new model whose parameters the optimizer/scaler do not
                     # know about, which causes:
-                    #   "AssertionError: No inf checks were recorded for this
-                    #    optimizer."
+                    # "AssertionError: No inf checks were recorded for this
+                    #  optimizer."
                     # load_state_dict copies data into the existing tensors via
                     # copy_() so tensor identity is retained and the optimizer /
                     # scaler continue to work.
-                    checkpoint_model = VisionEncoderDecoderModel.from_pretrained(
-                        last_epoch_dir
-                    )
+                    checkpoint_model = VisionEncoderDecoderModel.from_pretrained(output_dir)
                     model.load_state_dict(checkpoint_model.state_dict())
                     del checkpoint_model  # free the temporary model immediately
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                    if torch.cuda.is_available(): torch.cuda.empty_cache()
                     model.to(self.device)
             model.train()
             epoch_loss = 0.0
             epoch_acc = 0.0
             n_batches = 0
 
-            pbar = tqdm(
-                train_loader,
-                desc=f"Época {epoch + 1}/{epochs}",
-                unit="batch",
-                leave=False,
-            )
+            # Ajustar total do progress bar quando há limite de steps por época
+            pbar_total = len(train_loader)
+            if max_steps_per_epoch is not None and max_steps_per_epoch > 0:
+                pbar_total = min(pbar_total, max_steps_per_epoch)
+
+            pbar = tqdm(train_loader, desc=f"Época {epoch + 1}/{epochs}", unit="batch", leave=False, total=pbar_total)
             optimizer.zero_grad(set_to_none=True)
             for batch_idx, batch in enumerate(pbar):
                 pixel_values = batch["pixel_values"].to(self.device, non_blocking=True)
@@ -542,16 +547,17 @@ class DonutFineTuner:
 
                 pbar.set_postfix({"loss": f"{loss.item():.4f}", "acc": f"{batch_acc.item():.4f}"})
 
+                # Limite máximo de steps por época (quando definido)
+                if max_steps_per_epoch is not None and max_steps_per_epoch > 0 and batch_idx + 1 >= max_steps_per_epoch:
+                    logger.info(f"Limite de {max_steps_per_epoch} steps por época atingido. Encerrando época {epoch + 1} antecipadamente.")
+                    break
+
                 if global_step % 50 == 0:
-                    logger.info(
-                        f"Época {epoch + 1}/{epochs}, Step {global_step}, "
-                        f"Loss: {loss.item():.4f}"
-                    )
+                    logger.info(f"Época {epoch + 1}/{epochs}, Step {global_step}, Loss: {loss.item():.4f}")
 
                 if save_steps > 0 and global_step % save_steps == 0:
                     # Remover checkpoints antigos mantendo apenas o mais recente
-                    for old_cp in output_dir.glob("checkpoint-*"):
-                        shutil.rmtree(old_cp, ignore_errors=True)
+                    for old_cp in output_dir.glob("checkpoint-*"): shutil.rmtree(old_cp, ignore_errors=True)
                     checkpoint_dir = output_dir / f"checkpoint-{global_step}"
                     model.save_pretrained(checkpoint_dir)
                     processor.save_pretrained(checkpoint_dir)
@@ -561,8 +567,7 @@ class DonutFineTuner:
             avg_loss = epoch_loss / max(n_batches, 1)
 
             # Limpar memória GPU após época de treino antes da avaliação
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            if torch.cuda.is_available(): torch.cuda.empty_cache()
             gc.collect()
 
             # Avaliação
@@ -570,14 +575,12 @@ class DonutFineTuner:
             eval_loss = 0.0
             eval_acc = 0.0
             n_eval_batches = 0
-            pbar_eval = tqdm(
-                eval_loader,
-                desc="Avaliação",
-                unit="batch",
-                leave=False,
-            )
+            # Avaliar apenas a quantidade de steps executados nesta época
+            # (respeita max_steps_per_epoch), em vez do dataset inteiro.
+            eval_steps = min(len(eval_loader), max(n_batches, 1))
+            pbar_eval = tqdm(eval_loader, desc="Avaliação", unit="batch", leave=False, total=eval_steps)
             with torch.no_grad():
-                for batch in pbar_eval:
+                for batch_idx, batch in enumerate(pbar_eval):
                     pixel_values = batch["pixel_values"].to(self.device, non_blocking=True)
                     labels = batch["labels"].to(self.device, non_blocking=True)
                     with torch.amp.autocast('cuda', enabled=use_amp):
@@ -598,10 +601,12 @@ class DonutFineTuner:
 
                     n_eval_batches += 1
                     pbar_eval.set_postfix({"eval_loss": f"{outputs.loss.item():.4f}"})
+
+                    if batch_idx + 1 >= eval_steps:
+                        break
             pbar_eval.close()
 
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            if torch.cuda.is_available(): torch.cuda.empty_cache()
             gc.collect()
 
             avg_eval_loss = eval_loss / max(n_eval_batches, 1)
@@ -617,8 +622,7 @@ class DonutFineTuner:
             # Salvar métricas consolidadas em JSON (metrics.json no diretório raiz do modelo)
             metrics_path = output_dir / "metrics.json"
             try:
-                with open(metrics_path, "r", encoding="utf-8") as f:
-                    metrics = json.load(f)
+                with open(metrics_path, "r", encoding="utf-8") as f: metrics = json.load(f)
             except Exception:
                 metrics = {"epochs": []}
             metrics["epochs"].append({
@@ -631,38 +635,23 @@ class DonutFineTuner:
             with open(metrics_path, "w", encoding="utf-8") as f:
                 json.dump(metrics, f, ensure_ascii=False, indent=2)
 
-            # Salvar melhor modelo (usar pesos EMA se disponível)
+            # Salvar o único modelo na raiz, sobrescrevendo o anterior (usar pesos EMA se disponível)
             save_model = ema_model if ema_model is not None else model
             if avg_eval_loss < best_eval_loss:
                 best_eval_loss = avg_eval_loss
-                best_dir = output_dir / "best"
-                save_model.save_pretrained(best_dir)
-                processor.save_pretrained(best_dir)
-                logger.info(f"Melhor modelo salvo (loss={best_eval_loss:.4f})")
-
-            # Salvar modelo ao final de cada época, sobrescrevendo o anterior
-            last_epoch_dir = output_dir / "last_epoch"
-            if last_epoch_dir.exists():
-                shutil.rmtree(last_epoch_dir, ignore_errors=True)
-            save_model.save_pretrained(last_epoch_dir)
-            processor.save_pretrained(last_epoch_dir)
-            # Salvar metadados da época
-            with open(last_epoch_dir / "epoch_info.json", "w", encoding="utf-8") as f:
-                json.dump({
-                    "epoch": epoch + 1,
-                    "train_loss": round(avg_loss, 6),
-                    "eval_loss": round(avg_eval_loss, 6),
-                    "train_acc": round(avg_train_acc, 6),
-                    "eval_acc": round(avg_eval_acc, 6),
-                }, f, indent=2)
-            logger.info(f"Modelo da época {epoch + 1} salvo em: {last_epoch_dir}")
-            # Apagar modelos antigos (épocas e checkpoints), mantendo apenas o mais recente
+                logger.info(f"Nova melhor perda de validação: {best_eval_loss:.4f}")
+            save_model.save_pretrained(output_dir)
+            processor.save_pretrained(output_dir)
+            logger.info(f"Modelo da época {epoch + 1} salvo em: {output_dir} (sobrescrito)")
+            # Apagar subpastas/modelos antigos, mantendo apenas o modelo único na raiz
             self._limpar_modelos_antigos(output_dir)
 
-        # Salvar modelo final (usar pesos EMA se disponível)
+        # Salvar o único modelo final na raiz, sobrescrevendo (usar pesos EMA se disponível)
         save_model = ema_model if ema_model is not None else model
-        save_model.save_pretrained(output_dir / "final")
-        processor.save_pretrained(output_dir / "final")
-        logger.info(f"Treino concluído! Modelo salvo em: {output_dir}")
+        save_model.save_pretrained(output_dir)
+        processor.save_pretrained(output_dir)
+        # Apagar subpastas antigas, mantendo apenas o modelo único na raiz
+        self._limpar_modelos_antigos(output_dir)
+        logger.info(f"Treino concluído! Modelo único salvo (sobrescrito) em: {output_dir}")
 
         return output_dir

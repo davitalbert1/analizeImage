@@ -154,6 +154,7 @@ def cmd_train(args):
         batch_size=args.batch_size,
         learning_rate=args.lr,
         gradient_accumulation_steps=getattr(args, "grad_accum_steps", 4),
+        max_steps_per_epoch=getattr(args, "max_steps_per_epoch", None),
     )
 
     print(f"\n✅ Treinamento concluído! Modelo salvo em: {output}")
@@ -234,9 +235,10 @@ Exemplos:
     p_train.add_argument("--annotations", required=True, help="Diretório com anotações JSON")
     p_train.add_argument("--model", default="naver-clova-ix/donut-base", help="Modelo base")
     p_train.add_argument("--output-dir", default="./trained_model", help="Diretório de saída")
-    p_train.add_argument("--epochs", type=int, default=30, help="Épocas (padrão: 30)")
+    p_train.add_argument("--epochs", type=int, default=5, help="Épocas (padrão: 5)")
     p_train.add_argument("--batch-size", type=int, default=1, help="Batch size (padrão: 1 para Donut)")
     p_train.add_argument("--grad-accum-steps", type=int, default=4, help="Passos de acúmulo de gradiente (padrão: 4)")
+    p_train.add_argument("--max-steps-per-epoch", type=int, default=500, help="Máximo de steps por época (padrão: 500, use 0 para sem limite)")
     p_train.add_argument("--lr", type=float, default=5e-5, help="Learning rate (padrão: 5e-5)")
     p_train.add_argument(
         "--max-length",
